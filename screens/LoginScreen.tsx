@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { BusIcon, CloseIcon } from '../components/icons';
+import { BusIcon, CloseIcon, EyeIcon, EyeOffIcon } from '../components/icons';
 
 interface LoginScreenProps {
   onLoginSuccess: () => void;
@@ -13,6 +13,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onBack }) => 
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,14 +67,27 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onBack }) => 
             </div>
             <div>
               <label className="block text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                className="input"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  className="input pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200 transition-colors focus:outline-none"
+                >
+                  {showPassword ? (
+                    <EyeOffIcon className="w-5 h-5" />
+                  ) : (
+                    <EyeIcon className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
             </div>
 
             {error && (
