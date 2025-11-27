@@ -1,0 +1,7 @@
+{
+  "name": "BusTracker Pro",
+  "description": "A comprehensive intercity bus tracking Progressive Web App (PWA) that redefines the way passengers and drivers interact on the road, enabling live GPS tracking, occupancy updates, and instant SOS alerts.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
