@@ -1,152 +1,166 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useSupabase } from '../context/SupabaseContext';
 import { useLocalization } from '../context/LocalizationContext';
-import { api } from '../services/api';
+import { api, DBBus } from '../services/api';
 import { Occupancy, BusStatus, reverseGeocode } from '../types';
-import MapComponent from '../components/MapComponent';
-import { getBusMarkerIconObj } from '../components/mapUtils';
-import { AlertIcon, ClockIcon, LogoutIcon, BusIcon, GpsIcon } from '../components/icons';
-
-const OccupancyButton: React.FC<{
-  level: Occupancy;
-  current: Occupancy;
-  onClick: (level: Occupancy) => void;
-  color: string;
-}> = ({ level, current, onClick, color }) => (
-  <button
-    onClick={() => onClick(level)}
-    className={`flex-1 py-3.5 rounded-xl font-bold text-white transition-all duration-200 transform active:scale-95 ${color
-      } ${current === level
-        ? 'ring-4 ring-offset-2 ring-offset-neutral-50 dark:ring-offset-neutral-900 shadow-lg scale-105'
-        : 'opacity-70 hover:opacity-100 hover:scale-102'
-      }`}
-  >
-    <div className="text-xs uppercase tracking-wider mb-1 font-semibold">Occupancy</div>
-    <div className="text-base font-bold">{level}</div>
-  </button>
-);
+import { AlertIcon, LogoutIcon, BusIcon, GpsIcon } from '../components/icons';
 
 const DriverHomeScreen: React.FC = () => {
-  const [isOnline, setIsOnline] = useState(false);
-  const [tripActive, setTripActive] = useState(false);
-  const [occupancy, setOccupancy] = useState<Occupancy>(Occupancy.EMPTY);
-  const [gpsActive, setGpsActive] = useState(false);
-  const [showSosConfirm, setShowSosConfirm] = useState(false);
-
-  const [currentLocation, setCurrentLocation] = useState<[number, number]>([19.8347, 75.8816]);
-  const [currentAddress, setCurrentAddress] = useState('Updating location...');
-
-  const { t } = useLocalization();
   const { user, logout } = useAuth();
+  const { t } = useLocalization();
 
-  const [assignedBusId, setAssignedBusId] = useState<string | null>(null);
-  const [availableRoutes, setAvailableRoutes] = useState<string[]>([]);
-  const [selectedRoute, setSelectedRoute] = useState('');
+  // Persistent State: Initialize from localStorage
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    const savedStatus = localStorage.getItem('driverOnlineStatus');
+    return savedStatus === 'true';
+  });
 
-  // Fetch Assigned Bus & Routes
+  // App State
+  const [assignedBus, setAssignedBus] = useState<DBBus | null>(null);
+  const [assignedRouteName, setAssignedRouteName] = useState<string>('Loading route...');
+  const [occupancy, setOccupancy] = useState<Occupancy>(Occupancy.EMPTY);
+  const [locationSending, setLocationSending] = useState<boolean>(false);
+  const [lastLocationTime, setLastLocationTime] = useState<string>('-');
+  const [showSosConfirm, setShowSosConfirm] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Refs for interval management
+  const locationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 1. Fetch Driver Profile & Assigned Bus on Mount
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchDriverData = async () => {
+      if (!user) return;
       try {
-        // 1. Fetch all routes first
-        const routes = await api.getRoutes();
-        const names = routes.map(r => r.name);
-        setAvailableRoutes(names);
-
-        let assignedRouteName = '';
-
-        // 2. If user is logged in, check for assigned bus and its route
-        if (user) {
-          const driver = await api.getDriverByUserId(user.id);
-          if (driver && driver.assigned_bus_id) {
-            setAssignedBusId(driver.assigned_bus_id);
-
-            // Fetch the bus details to get the assigned route
-            const buses = await api.getBuses();
-            const assignedBus = buses.find(b => b.id === driver.assigned_bus_id);
-
-            if (assignedBus && assignedBus.routes) {
-              // Supabase might return it as an array or object depending on relationship
-              // Cast to any to handle both cases safely
-              const routeData = assignedBus.routes as any;
-              assignedRouteName = routeData.name || (Array.isArray(routeData) && routeData[0]?.name) || '';
-            }
+        const driver = await api.getDriverByUserId(user.id);
+        if (driver && driver.assigned_bus_id) {
+          // Fetch full bus details
+          const bus = await api.getBusById(driver.assigned_bus_id);
+          if (bus) {
+            setAssignedBus(bus);
+            // Extract route name safely
+            const routeData = bus.routes as any;
+            const routeName = routeData?.name || (Array.isArray(routeData) && routeData[0]?.name) || 'No Route Assigned';
+            setAssignedRouteName(routeName);
+          } else {
+            setErrorMsg('Assigned bus not found. Contact admin.');
           }
+        } else {
+          setErrorMsg('No bus assigned. Contact admin.');
         }
-
-        // 3. Set the selected route: priority to assigned route, then existing selection, then first available
-        if (assignedRouteName) {
-          setSelectedRoute(assignedRouteName);
-        } else if (!selectedRoute && names.length > 0) {
-          setSelectedRoute(names[0]);
-        }
-      } catch (error) {
-        console.error('Error fetching driver data:', error);
+      } catch (err) {
+        console.error('Error fetching driver data:', err);
+        setErrorMsg('Something went wrong. Try again.');
       }
     };
-    fetchData();
+
+    fetchDriverData();
   }, [user]);
 
-  // Handle Occupancy Change
-  const handleOccupancyChange = (newOccupancy: Occupancy) => {
-    setOccupancy(newOccupancy);
-    if (assignedBusId) {
-      api.updateBus(assignedBusId, { occupancy: newOccupancy });
-    }
-  };
-
-  // GPS Tracking Logic (Simplified for brevity, same as before but cleaner)
+  // 2. Persist Online Status & Sync with Backend
   useEffect(() => {
-    if (!tripActive || !assignedBusId) return;
+    localStorage.setItem('driverOnlineStatus', String(isOnline));
 
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        setGpsActive(true);
-        const { latitude, longitude } = position.coords;
-        setCurrentLocation([latitude, longitude]);
-        api.updateBusLocation(assignedBusId, latitude, longitude, occupancy, 'Calculating...');
-        reverseGeocode(latitude, longitude).then(setCurrentAddress).catch(() => { });
-      },
-      (error) => {
-        console.error("GPS Error:", error);
-        setGpsActive(false);
-      },
-      { enableHighAccuracy: true }
-    );
+    const syncStatus = async () => {
+      if (!user || !assignedBus) return;
 
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [tripActive, assignedBusId, occupancy]);
+      try {
+        // Update Driver Status (Logical)
+        await api.updateDriverStatus(user.id, isOnline ? 'online' : 'offline');
 
-  const handleGoOnline = () => {
-    setIsOnline(!isOnline);
-    if (!isOnline) {
-      // Going Online
-      if (assignedBusId) api.updateBusStatus(assignedBusId, BusStatus.AVAILABLE);
-    } else {
-      // Going Offline
-      setTripActive(false);
-      if (assignedBusId) api.updateBusStatus(assignedBusId, BusStatus.INACTIVE);
+        // Update Bus Status (Physical)
+        const newStatus = isOnline ? BusStatus.AVAILABLE : BusStatus.INACTIVE;
+        await api.updateBusStatus(assignedBus.id, newStatus);
+      } catch (err) {
+        console.error("Failed to sync status:", err);
+      }
+    };
+
+    syncStatus();
+  }, [isOnline, assignedBus, user]);
+
+
+  // 3. Location Sending Logic (5-second Interval)
+  useEffect(() => {
+    // Clear existing interval if any
+    if (locationIntervalRef.current) {
+      clearInterval(locationIntervalRef.current);
+      locationIntervalRef.current = null;
     }
-  };
 
-  const handleStartSharing = () => {
-    if (!isOnline) {
-      alert("Please go online first.");
+    // Only start if Online AND Bus is Assigned
+    if (isOnline && assignedBus) {
+      // Start Interval
+      locationIntervalRef.current = setInterval(async () => {
+        if (!navigator.geolocation) {
+          setLocationSending(false);
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords;
+            const timestamp = new Date().toLocaleTimeString();
+
+            try {
+              // Send Location Update
+              await api.updateBusLocation(assignedBus.id, latitude, longitude, occupancy);
+
+              // Update UI State
+              setLocationSending(true);
+              setLastLocationTime(timestamp);
+            } catch (err) {
+              console.error("API Error sending location:", err);
+              setLocationSending(false); // API failed
+            }
+          },
+          (error) => {
+            console.error("GPS Error:", error);
+            setLocationSending(false); // GPS failed
+            if (error.code === 1) alert("Turn on GPS.");
+          },
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+      }, 5000);
+    } else {
+      setLocationSending(false);
+    }
+
+    // Cleanup on unmount or dependency change
+    return () => {
+      if (locationIntervalRef.current) {
+        clearInterval(locationIntervalRef.current);
+      }
+    };
+  }, [isOnline, assignedBus, occupancy]);
+
+
+  // Handlers
+  const toggleOnlineStatus = () => {
+    if (!assignedBus) {
+      alert("Cannot go online without an assigned bus.");
       return;
     }
-    setTripActive(!tripActive);
-    if (!tripActive) {
-      if (assignedBusId) api.updateBusStatus(assignedBusId, BusStatus.IN_TRIP);
-    } else {
-      if (assignedBusId) api.updateBusStatus(assignedBusId, BusStatus.AVAILABLE);
+    setIsOnline(prev => !prev);
+  };
+
+  const handleOccupancyChange = (newOccupancy: Occupancy) => {
+    setOccupancy(newOccupancy);
+    // Immediate update for occupancy if online
+    if (isOnline && assignedBus) {
+      api.updateBus(assignedBus.id, { occupancy: newOccupancy });
     }
   };
 
-  const handleSos = () => {
-    if (assignedBusId) {
-      api.updateBusStatus(assignedBusId, undefined, true);
-      alert('SOS Alert Sent! Help is on the way.');
-      setShowSosConfirm(false);
+  const handleSos = async () => {
+    if (assignedBus) {
+      try {
+        await api.updateBusStatus(assignedBus.id, undefined, true);
+        alert('SOS Alert Sent! Help is on the way.');
+        setShowSosConfirm(false);
+      } catch (err) {
+        alert("Failed to send SOS. Try again.");
+      }
     }
   };
 
@@ -161,81 +175,111 @@ const DriverHomeScreen: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-neutral-50 dark:bg-neutral-900 overflow-y-auto pb-20">
-      {/* Welcome Card */}
+      {/* Header / Dashboard Card */}
       <div className="bg-gradient-to-br from-white to-neutral-50 dark:from-neutral-800 dark:to-neutral-900 p-6 rounded-b-3xl shadow-medium mb-6">
         <div className="flex justify-between items-start mb-5">
           <div>
-            <h1 className="text-2xl font-bold text-neutral-900 dark:text-white mb-1">Hello, {user?.name || 'Driver'}</h1>
-            <p className="text-neutral-500 dark:text-neutral-400 text-sm font-medium">Ready to start your shift?</p>
+            <h1 className="text-2xl font-bold text-neutral-900 dark:text-white mb-1">
+              {user?.name || 'Driver'}
+            </h1>
+            <p className="text-neutral-500 dark:text-neutral-400 text-sm font-medium">
+              Dashboard
+            </p>
           </div>
-          <div className={`px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm ${isOnline
-            ? 'bg-success/10 text-success ring-2 ring-success/20'
-            : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-400'
+          <div className={`px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm transition-colors ${isOnline
+              ? 'bg-success/10 text-success ring-2 ring-success/20'
+              : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500'
             }`}>
             {isOnline ? 'ONLINE' : 'OFFLINE'}
           </div>
         </div>
 
-        <div className="card p-4">
-          <label className="text-xs font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-3 block">Assigned Bus</label>
-          <div className="flex items-center gap-3">
-            <div className="bg-primary/10 p-3 rounded-xl">
-              <BusIcon className="w-6 h-6 text-primary" />
-            </div>
-            <div className="flex-grow">
-              <select
-                className="w-full bg-transparent font-bold text-lg text-neutral-900 dark:text-white outline-none cursor-not-allowed"
-                value={assignedBusId || ''}
-                disabled={!!assignedBusId}
-                onChange={(e) => setAssignedBusId(e.target.value)}
-              >
-                <option value={assignedBusId || ''}>{assignedBusId || 'No Bus Assigned'}</option>
-              </select>
-            </div>
-          </div>
+        {/* Bus Info Card */}
+        <div className="bg-white dark:bg-neutral-800 p-4 rounded-xl shadow-sm border border-neutral-100 dark:border-neutral-700">
+          {errorMsg ? (
+            <div className="text-red-500 font-bold text-center py-2">{errorMsg}</div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4 mb-3">
+                <div className="bg-primary/10 p-3 rounded-xl">
+                  <BusIcon className="w-6 h-6 text-primary" />
+                </div>
+                <div>
+                  <p className="text-xs text-neutral-500 uppercase font-bold">Assigned Bus</p>
+                  <p className="text-lg font-bold text-neutral-900 dark:text-white">
+                    {assignedBus?.id || 'Loading...'}
+                  </p>
+                </div>
+              </div>
+              <div className="border-t border-neutral-100 dark:border-neutral-700 pt-3">
+                <p className="text-xs text-neutral-500 uppercase font-bold mb-1">Route</p>
+                <p className="text-base font-medium text-neutral-800 dark:text-neutral-200">
+                  {assignedRouteName}
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       <div className="px-4 space-y-6">
-        {/* Main Actions */}
-        <div className="grid grid-cols-2 gap-4">
-          <button
-            onClick={handleGoOnline}
-            className={`p-5 rounded-2xl font-bold text-white shadow-lg transition-all duration-200 transform active:scale-95 flex flex-col items-center justify-center gap-3 ${isOnline
+        {/* GO ONLINE / OFFLINE BUTTON */}
+        <button
+          onClick={toggleOnlineStatus}
+          disabled={!!errorMsg}
+          className={`w-full p-6 rounded-2xl font-bold text-white shadow-lg transition-all duration-300 transform active:scale-95 flex flex-col items-center justify-center gap-2 ${isOnline
               ? 'bg-success hover:bg-green-600 shadow-glow-success'
               : 'bg-neutral-400 hover:bg-neutral-500'
-              }`}
-          >
-            <div className={`w-3 h-3 rounded-full bg-white ${isOnline ? 'animate-pulse' : ''}`} />
-            <span className="text-sm">{isOnline ? 'You are Online' : 'Go Online'}</span>
-          </button>
+            } ${!!errorMsg ? 'opacity-50 cursor-not-allowed' : ''}`}
+        >
+          <div className={`w-4 h-4 rounded-full bg-white ${isOnline ? 'animate-pulse' : ''}`} />
+          <span className="text-xl tracking-wide">
+            {isOnline ? 'YOU ARE ONLINE' : 'GO ONLINE'}
+          </span>
+          <span className="text-xs font-normal opacity-90">
+            {isOnline ? 'Sharing live location...' : 'Tap to start shift'}
+          </span>
+        </button>
 
-          <button
-            onClick={handleStartSharing}
-            disabled={!isOnline}
-            className={`p-5 rounded-2xl font-bold text-white shadow-lg transition-all duration-200 transform active:scale-95 flex flex-col items-center justify-center gap-3 ${tripActive
-              ? 'bg-primary hover:bg-blue-600 shadow-glow-primary'
-              : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400'
-              } ${!isOnline ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            <GpsIcon className={`w-6 h-6 ${tripActive ? 'animate-bounce' : ''}`} />
-            <span className="text-sm">{tripActive ? 'Sharing Location' : 'Start Sharing'}</span>
-          </button>
+        {/* Debug / Status Indicators */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className={`p-3 rounded-xl border flex flex-col items-center justify-center text-center ${locationSending
+              ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+              : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+            }`}>
+            <span className="text-xs font-bold uppercase mb-1 text-neutral-500">Location Sending</span>
+            <span className={`text-lg font-bold ${locationSending ? 'text-green-600' : 'text-red-500'}`}>
+              {locationSending ? 'YES' : 'NO'}
+            </span>
+          </div>
+          <div className="p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 flex flex-col items-center justify-center text-center">
+            <span className="text-xs font-bold uppercase mb-1 text-neutral-500">Last Update</span>
+            <span className="text-lg font-mono font-medium text-neutral-700 dark:text-neutral-300">
+              {lastLocationTime}
+            </span>
+          </div>
         </div>
 
-        {/* Occupancy */}
-        {tripActive && (
-          <div className="card p-5 animate-scale-in">
-            <h3 className="text-sm font-bold text-neutral-900 dark:text-white mb-4 uppercase tracking-wide">Update Occupancy</h3>
+        {/* Occupancy Controls - Only visible when Online */}
+        {isOnline && (
+          <div className="card p-5 animate-scale-in bg-white dark:bg-neutral-800 rounded-xl shadow-sm">
+            <h3 className="text-sm font-bold text-neutral-900 dark:text-white mb-4 uppercase tracking-wide">
+              Current Occupancy
+            </h3>
             <div className="flex gap-3">
               {[Occupancy.LOW, Occupancy.MEDIUM, Occupancy.FULL].map(level => (
-                <OccupancyButton
+                <button
                   key={level}
-                  level={level}
-                  current={occupancy}
-                  onClick={handleOccupancyChange}
-                  color={getOccupancyColor(level)}
-                />
+                  onClick={() => handleOccupancyChange(level)}
+                  className={`flex-1 py-3 rounded-xl font-bold text-white transition-all duration-200 transform active:scale-95 ${getOccupancyColor(level)
+                    } ${occupancy === level
+                      ? 'ring-4 ring-offset-2 ring-offset-white dark:ring-offset-neutral-900 shadow-lg scale-105'
+                      : 'opacity-70 hover:opacity-100'
+                    }`}
+                >
+                  <div className="text-xs uppercase opacity-80 mb-1">Level</div>
+                  {level}
+                </button>
               ))}
             </div>
           </div>
@@ -244,18 +288,17 @@ const DriverHomeScreen: React.FC = () => {
         {/* SOS Button */}
         <button
           onClick={() => setShowSosConfirm(true)}
-          className="w-full bg-danger/10 dark:bg-danger/20 border-2 border-danger text-danger font-bold py-5 rounded-2xl hover:bg-danger/20 dark:hover:bg-danger/30 transition-all duration-200 flex items-center justify-center gap-3 shadow-lg hover:shadow-glow-danger active:scale-95"
+          className="w-full mt-4 bg-danger/10 dark:bg-danger/20 border-2 border-danger text-danger font-bold py-4 rounded-2xl hover:bg-danger/20 transition-all active:scale-95 flex items-center justify-center gap-3"
         >
           <AlertIcon className="w-6 h-6" />
-          <span className="text-base">SEND SOS ALERT</span>
+          <span>SEND SOS ALERT</span>
         </button>
       </div>
 
       {/* Footer */}
       <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700 p-4 flex justify-between items-center z-20">
         <div className="flex items-center gap-2">
-          <div className={`w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-green-500' : 'bg-neutral-400'}`} />
-          <span className="text-sm font-medium text-neutral-600 dark:text-neutral-300">{isOnline ? 'Online' : 'Offline'}</span>
+          <span className="text-xs text-neutral-400">v1.0.0</span>
         </div>
         <button
           onClick={logout}
@@ -266,7 +309,7 @@ const DriverHomeScreen: React.FC = () => {
         </button>
       </div>
 
-      {/* SOS Confirmation Modal */}
+      {/* SOS Modal */}
       {showSosConfirm && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white dark:bg-neutral-800 rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl animate-slide-up">
@@ -274,17 +317,19 @@ const DriverHomeScreen: React.FC = () => {
               <AlertIcon className="w-8 h-8 text-red-600 dark:text-red-500" />
             </div>
             <h3 className="text-xl font-bold text-neutral-900 dark:text-white mb-2">Send SOS Alert?</h3>
-            <p className="text-neutral-500 dark:text-neutral-400 mb-6">This will immediately notify the admin team and share your live location.</p>
+            <p className="text-neutral-500 dark:text-neutral-400 mb-6">
+              This will notify admin and share your live location.
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => setShowSosConfirm(false)}
-                className="flex-1 py-3 rounded-xl font-bold text-neutral-600 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-600"
+                className="flex-1 py-3 rounded-xl font-bold text-neutral-600 bg-neutral-100 hover:bg-neutral-200"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSos}
-                className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600 hover:bg-red-700 shadow-lg shadow-red-500/30"
+                className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600 hover:bg-red-700"
               >
                 YES, SEND
               </button>
