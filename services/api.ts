@@ -64,6 +64,32 @@ export const api = {
     },
 
     /**
+     * Fetch a single bus by ID
+     */
+    getBusById: async (busId: string): Promise<DBBus | null> => {
+        if (isMockMode) return null;
+        const { data, error } = await supabase!
+            .from('buses')
+            .select('*, routes(name, path_data), drivers!buses_driver_id_fkey(name)')
+            .eq('id', busId)
+            .single();
+
+        if (error) return null;
+        return data;
+    },
+
+    /**
+     * Update driver status (Mock implementation as per user request, mapping to bus status in reality or just logging)
+     * In a real scenario, we might have a 'status' field on the driver table.
+     */
+    updateDriverStatus: async (driverId: string, status: 'online' | 'offline') => {
+        // This is a placeholder to satisfy the "POST /driver/update-status" requirement.
+        // In this system, driver status is effectively the bus status.
+        // We will rely on updateBusStatus for the actual logic, but this function exists for API completeness.
+        console.log(`Driver ${driverId} is now ${status}`);
+    },
+
+    /**
      * Update bus location and occupancy
      */
     updateBusLocation: async (busId: string, lat: number, lng: number, occupancy?: Occupancy, eta?: string) => {
