@@ -491,7 +491,7 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col font-sans">
+    <div className="h-dvh w-screen flex flex-col font-sans">
       {showHeaderAndMenu && (
         <Header
           onMenuClick={() => setIsMenuOpen(true)}
