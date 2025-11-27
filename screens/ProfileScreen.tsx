@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogoutIcon, UserIcon } from '../components/icons';
+import { LogoutIcon, UserIcon, BusIcon, PhoneIcon } from '../components/icons';
 import { useLocalization } from '../context/LocalizationContext';
 import { UserRole } from '../types';
+import { api } from '../services/api';
 
 interface ProfileScreenProps {
   onLoginClick: () => void;
@@ -11,6 +12,25 @@ interface ProfileScreenProps {
 const ProfileScreen: React.FC<ProfileScreenProps> = ({ onLoginClick }) => {
   const { user, logout } = useAuth();
   const { t } = useLocalization();
+  const [driverData, setDriverData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      if (user && user.role === UserRole.DRIVER) {
+        setLoading(true);
+        try {
+          const data = await api.getDriverByUserId(user.id);
+          setDriverData(data);
+        } catch (error) {
+          console.error("Failed to fetch driver profile", error);
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+    fetchProfile();
+  }, [user]);
 
   if (!user) {
     return (
@@ -35,18 +55,47 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ onLoginClick }) => {
 
       {/* Profile Info */}
       <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-lg mb-8">
-        <div className="flex items-center gap-4 mb-4">
-          <div className="bg-primary p-3 rounded-full">
+        <div className="flex items-center gap-4 mb-6">
+          <div className="bg-primary p-4 rounded-full">
             <UserIcon className="w-8 h-8 text-white" />
           </div>
           <div>
             <p className="text-xl font-bold text-neutral-800 dark:text-neutral-100">{user.name}</p>
-            <p className="text-sm bg-accent text-white px-2 py-0.5 rounded-full inline-block font-medium capitalize">{user.role.toLowerCase()}</p>
+            <p className="text-sm bg-accent text-white px-3 py-1 rounded-full inline-block font-medium capitalize mt-1">
+              {user.role.toLowerCase()}
+            </p>
           </div>
         </div>
-        <div className="border-t border-neutral-200 dark:border-neutral-700 pt-4">
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">Email Address</p>
-          <p className="font-medium text-neutral-800 dark:text-neutral-200">{user.email}</p>
+
+        <div className="space-y-4 border-t border-neutral-200 dark:border-neutral-700 pt-4">
+          <div>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 uppercase font-bold mb-1">Email Address</p>
+            <p className="font-medium text-neutral-800 dark:text-neutral-200">{user.email}</p>
+          </div>
+
+          {/* Driver Specific Info */}
+          {user.role === UserRole.DRIVER && (
+            <>
+              <div>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 uppercase font-bold mb-1">Phone Number</p>
+                <div className="flex items-center gap-2">
+                  <PhoneIcon className="w-4 h-4 text-neutral-400" />
+                  <p className="font-medium text-neutral-800 dark:text-neutral-200">
+                    {loading ? 'Loading...' : (driverData?.phone || 'Not provided')}
+                  </p>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 uppercase font-bold mb-1">Assigned Bus</p>
+                <div className="flex items-center gap-2">
+                  <BusIcon className="w-4 h-4 text-neutral-400" />
+                  <p className="font-medium text-neutral-800 dark:text-neutral-200">
+                    {loading ? 'Loading...' : (driverData?.assigned_bus_id || 'None Assigned')}
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -55,12 +104,6 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ onLoginClick }) => {
           <div className="bg-white dark:bg-neutral-800 p-4 rounded-xl shadow-lg">
             <span className="font-medium text-neutral-700 dark:text-neutral-200">System Alert Preferences</span>
             <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">Configure how you receive SOS alerts and critical notifications.</p>
-          </div>
-        )}
-        {user.role === UserRole.DRIVER && (
-          <div className="bg-white dark:bg-neutral-800 p-4 rounded-xl shadow-lg">
-            <span className="font-medium text-neutral-700 dark:text-neutral-200">Trip Notification Preferences</span>
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">Manage alerts for route changes and important updates.</p>
           </div>
         )}
       </div>
