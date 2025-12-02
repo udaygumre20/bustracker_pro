@@ -18,6 +18,7 @@ interface BusWithAddress extends Bus {
 }
 
 import PassengerRouteTimelineScreen from './PassengerRouteTimelineScreen';
+import AboutScreen from './AboutScreen';
 
 const PassengerHomeScreen: React.FC = () => {
   const [selectedRoute, setSelectedRoute] = useState('');
@@ -251,6 +252,13 @@ const PassengerHomeScreen: React.FC = () => {
             routeId={selectedRouteObj?.id || ''}
             busLocation={selectedBus?.location}
           />
+        </div>
+      )}
+
+      {/* About Screen Overlay */}
+      {activeTab === 'about' && (
+        <div className="absolute inset-0 z-30 bg-white dark:bg-neutral-900 animate-slide-up">
+          <AboutScreen />
         </div>
       )}
     </div>
