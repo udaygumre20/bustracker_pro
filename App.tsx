@@ -243,6 +243,24 @@ const AppContent: React.FC = () => {
         });
       }
 
+      // --- CRITICAL FIX: Update Driver's assigned_bus_id ---
+      // If the driver assignment changed, we need to update the driver records too.
+      if (oldDriverId !== newDriverId) {
+        // 1. Unassign from old driver
+        if (oldDriverId) {
+          await api.updateDriver(oldDriverId, { assigned_bus_id: null });
+        }
+        // 2. Assign to new driver
+        if (newDriverId) {
+          await api.updateDriver(newDriverId, { assigned_bus_id: busData.id });
+        }
+      } else if (newDriverId) {
+        // Even if driver didn't change, ensure the link is consistent (self-healing)
+        // This covers cases where the link might be broken in one direction
+        await api.updateDriver(newDriverId, { assigned_bus_id: busData.id });
+      }
+      // -----------------------------------------------------
+
       // Reload data
       const [driversData, busesData, routesData] = await Promise.all([
         api.getDrivers(),
